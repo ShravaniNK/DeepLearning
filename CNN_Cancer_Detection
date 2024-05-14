@@ -1,0 +1,389 @@
+## STEP1: *Brief description of the problem and data*
+-  This is a binary image classification problem to identify metastatic cancer in small image patches taken from larger digital pathology scans of lymph node sections using convolutional neural netwroks. 
+- The training set contains 220025 (size) color images, each of pixel size or dimensions 96 X 96.
+- A positive label indicates that the center 32x32px region of a patch contains at least one pixel of tumor tissue.
+- Tumor tissue in the outer region of the patch does not influence the label.
+- The test set contains 57468 images.
+- The structure of CNN in deep learning consists of a filter, feature map, pooling and neural network.
+
+## Install Libraries
+import numpy as np
+import pandas as pd 
+import matplotlib.pyplot as plt
+
+import os
+import gc
+import cv2 
+
+from glob import glob 
+import time
+import sklearn
+from sklearn.model_selection import train_test_split
+
+import tensorflow as tf
+from tensorflow import keras
+from tensorflow.keras.preprocessing import image
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras import layers, optimizers, models
+from tensorflow.keras.metrics import AUC
+
+from keras.models import Sequential
+from keras.layers import Dense,Activation, Dropout, Flatten, Conv2D, MaxPooling2D, AveragePooling2D, BatchNormalization
+from keras.optimizers import RMSprop, SGD, Adam
+from tensorflow.keras.callbacks import EarlyStopping,ModelCheckpoint
+from keras.metrics import AUC
+
+from PIL import Image
+from PIL import ImageDraw
+train_on_gpu = True
+
+## STEP2: *Exploratory Data Analysis (EDA) — Inspect, Visualize and Clean the Data*
+# Define paths for training and testing sets
+train_path = '/kaggle/input/histopathologic-cancer-detection/train/'
+test_path = '/kaggle/input/histopathologic-cancer-detection/test/'
+# Obtain the list of files from train and test paths
+train_img = os.listdir(train_path)
+test_img = os.listdir(test_path)
+
+# Number of images in each dataset
+print("Number of training images:", len(train_img))
+print("Number of testing images:", len(test_img))
+
+# Load the train label data
+train_label = pd.read_csv('train_labels.csv')
+
+#'/kaggle/input/histopathologic-cancer-detection/train_labels.csv'
+
+print("------------------------------------------")
+print("Train_labels shape:", train_label.shape)
+print("------------------------------------------")
+
+# Check for missing data
+print("Check for missing data:\n", train_label.isna().sum())
+print("------------------------------------------")
+print("Information:\n")
+print(train_label.info())
+print("------------------------------------------")
+
+print("Describe:\n", train_label.describe())
+print("------------------------------------------")
+
+print("Value Counts:\n", train_label['label'].value_counts())
+print("------------------------------------------")
+print("Percentage of labels:\n", (train_label['label'].value_counts())/len(train_label) * 100)
+
+train_label.head(10)
+
+# Distribution plot for Labels
+plt.figure(figsize=(10,8))
+plt.hist(train_label['label'])
+plt.xlabel("Label")
+plt.ylabel("Number of Patients")
+plt.xticks(rotation=0)
+plt.show()
+
+# Visualize the images in training data
+fig = plt.figure(figsize=(20, 5))
+for i in range(10):
+    ax = fig.add_subplot(1, 10, i + 1, xticks=[], yticks=[])
+    im = Image.open(train_path + train_img[i])
+    plt.imshow(im)
+    label = train_label.loc[train_label['id'] == train_img[i].split('.')[0], 'label'].values[0]
+    ax.set_title('Label: %s' %label)
+
+# Visualization -method 2
+fig = plt.figure(figsize=(20, 5))
+for i in range(10):
+    ax = fig.add_subplot(1, 10, i + 1, xticks=[], yticks=[])
+    im = image.load_img(train_path + train_img[i])
+    plt.imshow(im)
+    label = train_label.loc[train_label['id'] == train_img[i].split('.')[0], 'label'].values[0]
+    ax.set_title(f'{i+1} : Label={label}')
+
+# Visualization - Test data
+fig = plt.figure(figsize=(20, 5))
+for i in range(10):
+    ax = fig.add_subplot(1, 10, i + 1, xticks=[], yticks=[])
+    im = image.load_img(test_path + test_img[i])
+    plt.imshow(im)
+
+## Analysis:
+- There is no missing data and needs no cleaning as well.
+- Since the training label dataset is significantly large (220025 images),processing time will be more. 
+- Also the dataset is unbalanced (60% data is labelled as 0 and 40% data id labelled as 1).
+- We will use a subset(100000 images) of the original dataset by using Disproportionate sampling method  where the sample size of each label is equal irrespective of its population.
+- Doing so we will get a reduced and balanced new dataset.
+
+### Reduced dataset
+new_df = train_label.groupby('label', group_keys=False).apply(lambda x: x.sample(50000))
+new_df.head()
+new_df['id'] = new_df['id'] + '.tif'
+# Balanced dataset
+new_df['label'].value_counts()
+-  Now we have a balanced dataset. 
+-  We will split the dataset into training and validation datasets before model building.
+
+# split the dataset
+train_data, val_data = train_test_split(new_df , test_size = 0.2 , random_state = 1234)
+train_data.shape , val_data.shape
+train_data = train_data.astype(str)
+val_data = val_data.astype(str)
+
+# Applies a transformation to an image according to given parameters and returns a transformed version of the input with same shape.
+data_gen = ImageDataGenerator(rescale = 1.0/255)
+
+train_gen = data_gen.flow_from_dataframe(
+dataframe = train_data,
+directory = train_path,
+x_col = 'id',
+y_col = 'label',
+seed = 52,
+target_size =(96,96),
+batch_size= 32,
+shuffle = True,
+class_mode = 'binary'
+)
+
+val_gen = data_gen.flow_from_dataframe(
+dataframe = val_data,
+directory =train_path,
+x_col = 'id',
+y_col = 'label',
+seed = 52,
+target_size =(96,96),
+batch_size= 32,
+shuffle = True,
+class_mode = 'binary'
+)
+
+# Load the train label data which has image ids and labels
+test_df = pd.read_csv('sample_submission.csv',dtype=str)
+print(test_df.shape)
+test_df.head()
+
+test_df['label'].value_counts()
+test_df['id'] += '.tif'
+test_df.head()
+
+
+test_gen = data_gen.flow_from_dataframe(
+dataframe = test_df,
+directory = test_path,
+x_col = 'id',
+y_col = 'label',
+target_size =(96,96),
+batch_size= 32,
+seed=52,
+shuffle = False, 
+class_mode = None
+)
+
+## STEP3: *CNN Model Architecture*
+- This architecture has some building blocks such as fully connected layers and sigmoid activation functions along with two additional building blocks : convolutional layers and pooling layers.
+-  Each image is of 96 X 96 pixels which has 9216 pixels and the training set we sampled has 100000 images, which means we will have millions of paramaters that will break down deep neural networks. 
+- CNNs can solve this problem using partially connected layers and weight sharing.
+-  Typical CNN architectures consists of a stack of few convolutional layers with RELU activations, then a pooling layer , then another few convolutional layers with RELU actuvations, a pooling layer and so on.
+-  With this the image gets smaller as it progresses through the network and deeper with more feature maps. 
+- At the top of the stack, a regular feed forward network is added with fully connected dense layers with RELU activations and the final layer which outpiuts the prediction using a sigmoid function for binary classification tasks.
+
+# Model1 - a simple CNN for the binary classification task
+
+model1_ROC = keras.metrics.AUC()
+
+model1 = Sequential()
+
+# first convolutional layer
+model1.add(Conv2D(filters = 32, kernel_size=(7,7),activation = 'relu',strides = 2,  padding='same',input_shape=[96,96, 3]))
+#Pooling layers reduce spatial dimensions
+model1.add(MaxPooling2D(pool_size=(2,2)))
+
+# second convolutional layer          
+model1.add(Conv2D(filters = 64, kernel_size=(3,3),activation = 'relu',padding='same'))
+
+# third convolutional layer  
+model1.add(Conv2D(filters = 64, kernel_size=(3,3),activation = 'relu',padding='same'))
+
+# fourth convolutional layer  
+model1.add(Conv2D(filters = 64, kernel_size=(3,3),activation = 'relu',padding='same'))
+
+# fifth convolutional layer  
+model1.add(Conv2D(filters = 64, kernel_size=(3,3),activation = 'relu',padding='same'))
+model1.add(MaxPooling2D(pool_size=(2,2)))
+
+# sixth convolutional layer  
+model1.add(Conv2D(filters=128, kernel_size=(3,3),activation = 'relu',padding='same'))
+
+# seventh convolutional layer  
+model1.add(Conv2D(filters=128, kernel_size=(3,3),activation = 'relu', padding='same'))
+model1.add(MaxPooling2D(pool_size=(2,2)))
+
+# flatten the convolutional layers output for fully connected layers
+model1.add(Flatten())
+
+# first fully connected layer
+model1.add(Dense(128, activation='relu'))    
+# Dropout layers are used for regularization to prevent overfitting.
+#It helps prevent overfitting by randomly ignoring a fraction of input units during training
+model1.add(Dropout(0.5))
+
+# second fully connected layer
+model1.add(Dense(64, activation='relu'))       
+model1.add(Dropout(0.5))
+
+# output layer
+model1.add(Dense(1, activation='sigmoid'))
+
+model1.summary()
+
+# compile the model
+model1.compile(loss='binary_crossentropy', metrics=['accuracy', model1_ROC])
+# train the model with train generator dataset
+model_1 = model1.fit(train_gen,
+        validation_data = val_gen,
+        epochs = 10 ,
+        verbose =1
+        )
+
+# Plot the learning curves for the simple cnn model_1 
+pd.DataFrame(model_1.history).plot(figsize=(10,8))
+plt.grid(True)
+plt.title('Learning_Curves:Model 2')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.gca().set_xlim(1,10)
+plt.gca().set_ylim(0,1) # setting the vertical range to [0-1]
+plt.show()
+
+## Step 4 : *Results and Analysis*
+- Now let's compare multiple architectures and tune hyperparameters to improve training or performance.
+- Optimization - In neural networks,the most commonly used optimization algorithms are gradient descent based(SGD, Adam, RMSprop) which minimizes the loss function by iteratively updating model weights.
+- The hyperparameters that can be tuned are learning rate and momentum(for sgd).
+- We will also use batch normalization between the layers of CNN to speed up the training. 
+- We will use early stopping which will interrupt training ealry when there is no progress to avoid wasting time.
+
+# Model-2
+model2 = Sequential()
+
+# first convolutional layer
+# the first layer uses large filter size =(7X7) and stride = 2 because of larger images (96X96X3).
+model2.add(Conv2D(filters = 32, kernel_size=(7,7),activation = 'relu',strides = 2,  padding='same',input_shape=[96,96, 3]))
+model2.add(BatchNormalization())
+#Pooling layers reduce spatial dimensions by a factor of 2
+model2.add(MaxPooling2D(pool_size=(2,2))) 
+
+# second convolutional layer          
+model2.add(Conv2D(filters = 64, kernel_size=(3,3),activation = 'relu',padding='same'))
+
+# third convolutional layer  
+model2.add(Conv2D(filters = 64, kernel_size=(3,3),activation = 'relu',padding='same'))
+
+# fourth convolutional layer  
+model2.add(Conv2D(filters = 64, kernel_size=(3,3),activation = 'relu',padding='same'))
+
+# fifth convolutional layer  
+model2.add(Conv2D(filters = 64, kernel_size=(3,3),activation = 'relu',padding='same'))
+model2.add(BatchNormalization())
+model2.add(MaxPooling2D(pool_size=(2,2)))
+
+# sixth convolutional layer  
+model2.add(Conv2D(filters=128, kernel_size=(3,3),activation = 'relu',padding='same'))
+
+# seventh convolutional layer  
+model2.add(Conv2D(filters=128, kernel_size=(3,3),activation = 'relu', padding='same'))
+model2.add(BatchNormalization())
+model2.add(MaxPooling2D(pool_size=(2,2)))
+
+# flatten the convolutional layers output for fully connected layers
+model2.add(Flatten())
+
+# first fully connected layer ---- hidden layer 1
+model2.add(Dense(128, activation='relu')) 
+
+# Dropout layers are used for regularization to prevent overfitting.
+# It helps prevent overfitting by randomly ignoring a fraction of input units during training
+model2.add(Dropout(0.5))
+
+# second fully connected layer ---- hidden layer 2
+model2.add(Dense(64, activation='relu'))       
+model2.add(Dropout(0.5))
+
+# output layer
+model2.add(Dense(1, activation='sigmoid'))
+    
+model2.summary()
+
+## Comparing cnn model performance with 3 different optimizers
+
+### SGD Optimizer
+# compile the model2 with sgd optimizer
+sgd = SGD(learning_rate = 0.001 , momentum=0.5)
+model2.compile(optimizer = sgd, loss='binary_crossentropy', metrics=['accuracy'])
+
+# train the model with train generator dataset
+# patience in earlystopping is the number of epochs with no improvement after which training will be stopped.
+early_stopping = EarlyStopping(monitor='val_loss',patience= 5, restore_best_weights= True)
+model_2 = model2.fit(train_gen,
+        validation_data = val_gen,
+        epochs = 10 ,
+        verbose =1, callbacks = [early_stopping]
+        )
+
+# Plot the learning curves for model_2 (model2 with sgd optimizer)
+pd.DataFrame(model_2.history).plot(figsize=(10,8))
+plt.grid(True)
+plt.title('Learning_Curves:Model 2 with sgd optimizer')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.gca().set_xlim(1,10)
+plt.gca().set_ylim(0,1) # setting the vertical range to [0-1]
+plt.show()
+
+### Adam Optimizer
+
+# compile the model2 with Adam optimizer
+opt1 = Adam(learning_rate = 0.001)
+model2.compile(optimizer = opt1, loss='binary_crossentropy', metrics=['accuracy'])
+
+# train the model2 with train generator dataset
+early_stopping = EarlyStopping(monitor='val_loss',patience= 5, restore_best_weights= True)
+model_3 = model2.fit(train_gen,
+        validation_data = val_gen,
+        epochs = 10 ,
+        verbose =1, callbacks = [early_stopping]
+        )
+
+# Plot the learning curves for model_3 (model2 with Adam optimizer)
+pd.DataFrame(history3.history).plot(figsize=(10,8))
+plt.grid(True)
+plt.title('Learning_Curves:Model 2 with Adam optimizer')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.gca().set_xlim(1,10)
+plt.gca().set_ylim(0,1) # setting the vertical range to [0-1]
+plt.show() 
+
+### RMSprop Optimizer
+# compile the model2 with RMSprop optimizer
+opt2 = RMSprop(learning_rate = 0.001)
+model2.compile(optimizer = opt2, loss='binary_crossentropy', metrics=['accuracy'])
+
+# train the model with train generator dataset
+early_stopping = EarlyStopping(monitor='val_loss',patience= 5, restore_best_weights= True)
+model_4 = model2.fit(train_gen,
+        validation_data = val_gen,
+        epochs = 5 ,
+        verbose = 1, callbacks = [early_stopping]
+        )
+
+# Plot the learning curves for model_4 (model2 with RMSprop optimizer)
+pd.DataFrame(model_4.history).plot(figsize=(10,8))
+plt.grid(True)
+plt.title('Learning_Curves:Model 2 with RMSprop optimizer')
+plt.xlabel('Epochs')
+plt.ylabel('Loss')
+plt.gca().set_xlim(1,10)
+plt.gca().set_ylim(0,1) # setting the vertical range to [0-1]
+plt.show() 
+
+
+
